@@ -5,13 +5,13 @@ import time
 from pygame.math import Vector3
 import numpy as np
 from AstarPathPlanning import AStarPathPlanner
-from vpython import canvas, box, sphere, cone, vector, color, rate
+from vpython import canvas, box, sphere, cone, cylinder, vector, color, rate
 
 # ---------- Parameters ----------
-WIDTH, HEIGHT, DEPTH = 1400, 500, 1400
+WIDTH, HEIGHT, DEPTH = 2000, 500, 2000
 NUM_BOIDS = 10
 NUM_LEADERS = 1
-MAX_SPEED = 2
+MAX_SPEED = 1
 MAX_FORCE = 0.02
 
 SEPARATION_RADIUS = 70
@@ -28,23 +28,57 @@ ALIGNMENT_WEIGHT = 0.0
 COHESION_WEIGHT = 0.0
 LEADER_WEIGHT = 1.0
 
+OBSTACLE_WEIGHT = 20.0
+OBSTACLE_RADIUS = 80          # physical radius of an obstacle
+OBSTACLE_BUFFER = 60          # extra avoidance margin around an obstacle
+
+LINE_WEIGHT = 5.0             # pull toward a boid's assigned slot on the line
+LINE_SPACING = 80             # even gap between boids along the formation line
+
 BOID_SIZE = 8
 BG_COLOR = (114, 180, 235)
 BOID_COLOR = (200, 200, 220)
 LEADER_COLOR = (255, 0, 0)
+OBSTACLE_COLOR = (200, 90, 40)   # distinct orange so obstacles stand out
 FPS = 60
 
 CENTER = Vector3(WIDTH / 2, HEIGHT / 2, DEPTH / 2)
 
 # -------------------------------- #PATH PLANNING
-mission_state = {"Takeoff": True, "cruise": False, "leveling": False, "landing": False}
-START_POS = Vector3(200,1,200)
-PATH_HEIGHT = 300
-MID_POS = Vector3(1100,1,400)
-END_POS = Vector3(1200,1,1100)
+
 
 grid = np.zeros((WIDTH, DEPTH))
+# --------------- #OBSTACLES
+cx, cz = WIDTH // 2, DEPTH // 2
+xx, zz = np.ogrid[:WIDTH, :DEPTH]
+grid[(xx - cx) ** 2 + (zz - cz) ** 2 <= 100 ** 2] = 1
+
 planner = AStarPathPlanner(grid, allow_diagonal=True)
+
+
+START_POS = Vector3(200,1,200)
+PATH_HEIGHT = 300
+MID_POS = Vector3(300,1,900)
+MID2_POS = Vector3(700,1,900)
+END_POS = Vector3(200,1,200)
+
+path1, _ = planner.find_path((int(START_POS.x),int(START_POS.z)),(int(MID_POS.x),int(MID_POS.z)))
+op_path, _ = planner.find_path((int(MID_POS.x),int(MID_POS.z)),(int(MID2_POS.x),int(MID2_POS.z)))
+path3d1 = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in path1]
+op_path3d = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in op_path]
+
+
+mission_index = 0
+mission_state = [
+    {"step": 0, "name": "Takeoff", "path": None},
+    {"step": 1, "name": "Cruise", "path": path3d1, "Dest": MID_POS},
+    {"step": 2, "name": "Operation", "path": None, "Type": "Sweep"},
+    {"step": 3, "name": "Operation", "path": op_path3d, "Type": "Match"},
+    {"step": 4, "name": "Cruise", "path": None, "Dest": END_POS},
+    {"step": 5, "name": "Level", "path": None},
+    {"step": 6, "name": "Landing", "path": None}
+]
+current_step = mission_state[mission_index]
 # --------------------------------
 
 
@@ -64,6 +98,17 @@ def random_unit_vector3():
     r = math.sqrt(max(0.0, 1 - u * u))
     return Vector3(r * math.cos(theta), r * math.sin(theta), u)
 
+def generate_path(start,end):
+    new_path, _ = planner.find_path((int(start.x),int(start.z)),(int(end.x),int(end.z)))
+    path3d = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in new_path]
+    #draw_generated_path(path3d)
+    return path3d
+
+def draw_generated_path(path3d):
+    for p in path3d:
+        sphere(pos=vector(p[0], PATH_HEIGHT, p[1]), radius=1, color=color.yellow, make_trail=False)
+
+
 
 class Leader:
     """Steering follower: seeks each waypoint along the path in turn."""
@@ -75,10 +120,12 @@ class Leader:
         self.max_speed = L_MAX_SPEED
         self.max_force = L_MAX_FORCE
         self.waypoint_idx = 0
-        self.state_complete = 1
-        self.shape = sphere(pos=vp(self.pos), radius=12,
-                            color=vp_color(LEADER_COLOR),
-                            make_trail=False)
+        self.path_done = False
+        self.shape = cone(pos=vp(self.pos),
+                          axis=vector(0, 0, 1) * (BOID_SIZE * 3.5),
+                          radius=BOID_SIZE * 0.9,
+                          color=vp_color(LEADER_COLOR),
+                          make_trail=False)
 
     def apply_force(self, force):
         self.acc += force
@@ -93,19 +140,21 @@ class Leader:
             steer.scale_to_length(self.max_force)
         return steer
 
-    def update(self, path):
+    def update(self, path=None):
         if path:
             # Skip past any waypoints already inside the arrival radius.
-            while (self.waypoint_idx < len(path) - 1
-                   and self.pos.distance_to(path[self.waypoint_idx]) < WAYPOINT_THRESHOLD):
+            while (self.waypoint_idx < len(path) - 1 and self.pos.distance_to(path[self.waypoint_idx]) < WAYPOINT_THRESHOLD):
                 self.waypoint_idx += 1
-            if self.waypoint_idx != len(path) - 1:
-                self.apply_force(self.seek(path[self.waypoint_idx]))
+                self.path_done = False
+            if self.waypoint_idx == len(path) - 1:
+                self.path_done = True
+                #print("trips1")
             else:
-                self.vel = self.vel * 0.9
-                if (self.vel.x < 0.01 or self.vel.z < 0.01) and self.state_complete < 3:
-                    self.vel = Vector3(0,0,0)
-                    self.state_complete = 2
+                self.apply_force(self.seek(path[self.waypoint_idx]))
+                #print("trips2")
+                #print(self.waypoint_idx, end=" ")
+                #print(len(path) - 1)
+                           
 
         self.vel += self.acc
         if self.vel.length() > self.max_speed:
@@ -118,10 +167,42 @@ class Leader:
 
     def sync_visual(self):
         self.shape.pos = vp(self.pos)
+        if self.vel.length() > 0.001:
+            d = self.vel.normalize()
+            self.shape.axis = vector(d.x, d.y, d.z) * (BOID_SIZE * 3.5)
 
     def remove_visual(self):
         self.shape.clear_trail()
         self.shape.visible = False
+
+
+class Obstacle:
+    """Stationary vertical pillar. Never moves; only the Boid class reacts to it.
+
+    Defined purely by its x/z footprint (radius); it spans the full height, so
+    boids avoid it in the horizontal plane regardless of their altitude.
+    """
+
+    def __init__(self, x, z, radius=OBSTACLE_RADIUS):
+        self.x = x
+        self.z = z
+        self.radius = radius
+        # Solid core: the physical pillar, from the floor to the ceiling.
+        self.shape = cylinder(pos=vector(x, 0, z),
+                              axis=vector(0, HEIGHT, 0),
+                              radius=radius,
+                              color=vp_color(OBSTACLE_COLOR),
+                              opacity=1.0)
+        # Faint outer shell: the influence zone where boids start steering away.
+        self.zone = cylinder(pos=vector(x, 0, z),
+                             axis=vector(0, HEIGHT, 0),
+                             radius=radius + OBSTACLE_BUFFER,
+                             color=vp_color(OBSTACLE_COLOR),
+                             opacity=0.12)
+
+    def remove_visual(self):
+        self.shape.visible = False
+        self.zone.visible = False
 
 
 class Boid:
@@ -131,6 +212,7 @@ class Boid:
         self.acc = Vector3(0, 0, 0)
         self.max_speed = MAX_SPEED
         self.max_force = MAX_FORCE
+        self.line_target = None   # assigned slot on the formation line, if any
         self.shape = cone(pos=vp(self.pos),
                           axis=vector(0, 0, 1) * (BOID_SIZE * 2.5),
                           radius=BOID_SIZE * 0.6,
@@ -171,10 +253,11 @@ class Boid:
             steer.scale_to_length(self.max_force)
         return steer
 
-    def behaviors(self, boids, lead_boids):
+    def behaviors(self, boids, lead_boids, obstacles=()):
         sep = self.separation(boids, lead_boids) * SEPARATION_WEIGHT
         ali = self.alignment(boids) * ALIGNMENT_WEIGHT
         coh = self.cohesion(boids) * COHESION_WEIGHT
+        obs = self.avoid_obstacles(obstacles) * OBSTACLE_WEIGHT
 
         if NUM_LEADERS > 0:
             led = self.leader_force(lead_boids) * LEADER_WEIGHT
@@ -183,6 +266,11 @@ class Boid:
         self.apply_force(sep)
         self.apply_force(ali)
         self.apply_force(coh)
+        self.apply_force(obs)
+
+        # Hold position in the line formation, if one has been assigned.
+        if self.line_target is not None:
+            self.apply_force(self.seek(self.line_target) * LINE_WEIGHT)
 
     def separation(self, boids, lead_boid):
         steer = Vector3(0, 0, 0)
@@ -264,6 +352,32 @@ class Boid:
                 steer.scale_to_length(self.max_force)
         return (-steer)
 
+    def avoid_obstacles(self, obstacles):
+        # Steer away from each cylindrical pillar within its influence zone.
+        # Distance is measured in the horizontal x-z plane only, so altitude
+        # never matters - the pillars act as full-height walls.
+        steer = Vector3(0, 0, 0)
+        total = 0
+        for obs in obstacles:
+            dx = self.pos.x - obs.x
+            dz = self.pos.z - obs.z
+            d = math.hypot(dx, dz)
+            influence = obs.radius + OBSTACLE_BUFFER
+            if 0 < d < influence:
+                # Horizontal push only; harder the deeper inside the zone.
+                diff = Vector3(dx, 0, dz)
+                diff /= (d * d)
+                steer += diff
+                total += 1
+        if total > 0:
+            steer /= total
+            if steer.length() > 0.01:
+                steer.scale_to_length(self.max_speed)
+                steer -= self.vel
+                if steer.length() > self.max_force:
+                    steer.scale_to_length(self.max_force)
+        return steer
+
     def sync_visual(self):
         self.shape.pos = vp(self.pos)
         if self.vel.length() > 0.001:
@@ -306,32 +420,83 @@ def create_boids(n, lead_boid):
 def create_leaders(n):
     return [Leader(START_POS.x, START_POS.y, START_POS.z) for _ in range(n)] #######Starting
 
+def assign_line_targets(leader, boids):
+    """Spread the boids over a horizontal line passing through the leader.
+
+    The line runs perpendicular to the leader's heading (a sweep line) and the
+    boids are spaced evenly along it. Slots are handed out in the boids' current
+    left-to-right order along the line, so no two assignment paths ever cross -
+    combined with the separation force, the boids cannot collide on the way in.
+
+    Sets each boid's ``line_target`` and returns True once all are in place.
+    """
+    n = len(boids)
+    if n == 0:
+        return True
+
+    # Horizontal heading of the leader; default to the x-axis when stationary.
+    fwd = Vector3(leader.vel.x, 0, leader.vel.z)
+    if fwd.length() < 1e-6:
+        fwd = Vector3(1, 0, 0)
+    fwd = fwd.normalize()
+    # Rotate 90 degrees in the x-z plane to get the sideways line direction.
+    line_dir = Vector3(-fwd.z, 0, fwd.x)
+
+    # Even offsets centered on the leader: ..., -1.5s, -0.5s, 0.5s, 1.5s, ...
+    offsets = [(k - (n - 1) / 2.0) * LINE_SPACING for k in range(n)]
+
+    # Order boids by where they already sit along the line, then assign slots in
+    # that same order so their straight-line paths to the targets never cross.
+    order = sorted(range(n), key=lambda i: line_dir.dot(boids[i].pos - leader.pos))
+
+    formed = True
+    for slot, i in enumerate(order):
+        target = leader.pos + line_dir * offsets[slot]
+        target.y = leader.pos.y          # keep the line perfectly horizontal
+        boids[i].line_target = target
+        if boids[i].pos.distance_to(target) > WAYPOINT_THRESHOLD:
+            formed = False
+    return formed
+
+
 def mission_update(lead_boid,boids):
+    global mission_index
     global mission_state
+    global current_step
     global SEPARATION_WEIGHT
     global ALIGNMENT_WEIGHT
     global COHESION_WEIGHT
     global LEADER_WEIGHT
 
-    if mission_state["Takeoff"] == True:
-        if lead_boid[0].pos.y > PATH_HEIGHT - 5:
-            mission_state["Takeoff"] = False
-            mission_state["cruise"] = True
+    current_step = mission_state[mission_index]
+    next_step = False
+    
+    
+    if current_step["name"] == "Takeoff":
+        lead_boid[0].vel = Vector3(0,1,0)
+        if lead_boid[0].pos.y > (PATH_HEIGHT - 5):
+            next_step = True
 
-    if mission_state["cruise"] == True:
+    if current_step["name"] == "Cruise":
         SEPARATION_WEIGHT = 10.0
         ALIGNMENT_WEIGHT = 3.5
         COHESION_WEIGHT = 3.0
         LEADER_WEIGHT = 7.0
-        if lead_boid[0].state_complete == 2:
-            mission_state["cruise"] = False
-            mission_state["leveling"] = True
+        
+        if lead_boid[0].path_done:
+            print("Path done")
+            next_step = True
+            lead_boid[0].vel = Vector3(0,0,0)
+        if current_step["path"] == None:
+            current_step["path"] = generate_path(lead_boid[0].pos,current_step["Dest"])
+
+            
     
-    if mission_state["leveling"] == True:
+    if current_step["name"] == "Level":
         SEPARATION_WEIGHT = 10.0
         ALIGNMENT_WEIGHT = 0
         COHESION_WEIGHT = 0.5
-        LEADER_WEIGHT = 0.5
+        LEADER_WEIGHT = 0.0
         next_state = True
         for boid in boids:
             if boid.pos.y < (PATH_HEIGHT - 2):
@@ -343,15 +508,13 @@ def mission_update(lead_boid,boids):
             else:
                 boid.pos.y = PATH_HEIGHT
                 boid.acc.y = 0.0
-                boid.vel.y = 0
+                boid.vel.y = 0.0
         if next_state == True:
-            lead_boid[0].state_complete = 3
-            mission_state["landing"] = True
-            mission_state["leveling"] = False
+            next_step = True
             for boid in boids:
                 boid.vel = Vector3(0,0,0)
 
-    if mission_state["landing"]:
+    if current_step["name"] == "Landing":
         SEPARATION_WEIGHT = 0.0
         ALIGNMENT_WEIGHT = 0
         COHESION_WEIGHT = 0.0
@@ -359,7 +522,7 @@ def mission_update(lead_boid,boids):
             
         if lead_boid[0].pos.y < 1:
             lead_boid[0].vel = Vector3(0,0,0)
-            lead_boid[0].state_complete = 4
+            
         else:
             lead_boid[0].vel = Vector3(0,-0.5,0)
         for boid in boids:
@@ -367,6 +530,52 @@ def mission_update(lead_boid,boids):
                 boid.vel = Vector3(0,0,0)
             else:
                 boid.vel = Vector3(0,-0.5,0)
+    
+    if current_step["name"] == "Operation":
+        # Strong personal space so boids never collide; drop the flocking pulls
+        # so the line holds its shape while each boid seeks its own slot.
+        
+        if current_step["Type"] == "Sweep":
+            SEPARATION_WEIGHT = 3.0
+            ALIGNMENT_WEIGHT = 0.0
+            COHESION_WEIGHT = 0.0
+            LEADER_WEIGHT = 0.0
+            formed = assign_line_targets(lead_boid[0], boids)
+            if formed:
+                next_step = True
+                print("Formed")
+                for boid in boids:
+                    boid.line_target = None
+                    boid.vel = Vector3(0, 0, 0)
+        if current_step["Type"] == "Match":
+            SEPARATION_WEIGHT = 3.0
+            ALIGNMENT_WEIGHT = 1.0
+            COHESION_WEIGHT = 1.0
+            LEADER_WEIGHT = 1.0
+            if lead_boid[0].path_done:
+                next_step = True
+                print("ITS SHOULD BE DONE BUT WHY NOT")
+            else:
+                for boid in boids:
+                    # Copy the leader's velocity by value; assigning the object
+                    # directly would alias every boid to one shared Vector3, so
+                    # the cloning could never be undone in later phases.
+                    boid.vel = Vector3(lead_boid[0].vel)
+                    boid.acc = Vector3(0,0,0)
+
+
+
+
+    if next_step:
+        mission_index = mission_index + 1
+        print("mission_index", end= " ")
+        print(mission_index)
+        # re-arm path tracking for the next leg
+        if mission_index < len(mission_state):# and mission_state[mission_index]["name"] == "Cruise":
+            for leader in lead_boid:
+                leader.waypoint_idx = 0
+                leader.path_done = False
+                
 
 
 def main():
@@ -377,22 +586,29 @@ def main():
                    width=1200, height=700, background=vp_color(BG_COLOR))
     scene.center = vp(CENTER)
     scene.range = max(WIDTH, HEIGHT, DEPTH) * 0.6
-    scene.forward = vector(-1, -0.4, -1)
+    scene.forward = vector(1, -0.4, 1)
 
     # Translucent bounding volume so the 3D area is visible.
     box(pos=vp(CENTER), size=vector(WIDTH, HEIGHT, DEPTH),
         color=color.white, opacity=0.05)
     box(pos=vp(Vector3(WIDTH/2,0,DEPTH/2)), size=vector(WIDTH, 0.1, DEPTH), color=color.green)
 
+    # Grey cylinder: radius 100, 400 tall, centered in the scene.
+    # cylinder(pos=vp(Vector3(WIDTH / 2, HEIGHT / 2 - 200, DEPTH / 2)),
+    #          axis=vector(0, 400, 0), radius=100, color=color.gray(0.5))
+
     lead_boid = create_leaders(NUM_LEADERS)
     boids = create_boids(NUM_BOIDS, lead_boid)
+
+    # Stationary pillars (x, z footprint) the boids must steer around.
+    obstacles = [
+        Obstacle(WIDTH / 2, DEPTH / 2),
+        #Obstacle(WIDTH * 0.35, DEPTH * 0.65),
+    ]
     
-    path1, _ = planner.find_path((int(START_POS.x),int(START_POS.z)),(int(MID_POS.x),int(MID_POS.z)))
-    path2, _ = planner.find_path((int(MID_POS.x),int(MID_POS.z)),(int(END_POS.x),int(END_POS.z)))
-    path = path1 + path2
-    path3d = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in path]
-    for p in path:
-        sphere(pos=vector(p[0], PATH_HEIGHT, p[1]), radius=1, color=color.yellow, make_trail=False)
+    # path = path1
+    # for p in path:
+    #     sphere(pos=vector(p[0], PATH_HEIGHT, p[1]), radius=1, color=color.yellow, make_trail=False)
 
     state = {"paused": False, "running": True, "reset": False, "add": 0}
 
@@ -416,9 +632,7 @@ def main():
 
     while state["running"]:
         rate(FPS)
-        
-        
-        
+             
         if state["reset"]:
             for b in boids:
                 b.remove_visual()
@@ -438,13 +652,13 @@ def main():
         if not state["paused"]:
             
             for boid in boids:
-                boid.behaviors(boids, lead_boid)###########
-                mission_update(lead_boid,boids)##################
+                boid.behaviors(boids, lead_boid, obstacles)
+                mission_update(lead_boid,boids)
                 boid.update()
                 boid.edges()
             if NUM_LEADERS > 0:
                 for leader in lead_boid:
-                    leader.update(path3d)
+                    leader.update(current_step["path"])
                     leader.edges()
         
         for boid in boids:
