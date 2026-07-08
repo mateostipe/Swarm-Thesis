@@ -12,20 +12,20 @@ from AstarPathPlanning import AStarPathPlanner
 WIDTH, HEIGHT = 1400, 700 #2400, 1600
 NUM_BOIDS = 10
 NUM_LEADERS = 1
-MAX_SPEED = 1.4
+MAX_SPEED = 1.3
 MAX_FORCE = 0.05
 L_MAX_SPEED = 0
 
-SEPARATION_RADIUS = 50
+SEPARATION_RADIUS = 40
 ALIGNMENT_RADIUS = 80
-COHESION_RADIUS = 100
+COHESION_RADIUS = 200
 LEADER_RADIUS = 300
-LEADER_SHADOW = 40
+LEADER_SHADOW = 20
 
-SEPARATION_WEIGHT = 4.0
-ALIGNMENT_WEIGHT = 0.5
-COHESION_WEIGHT = 1.0
-LEADER_WEIGHT = 1.5
+SEPARATION_WEIGHT = 5.0
+ALIGNMENT_WEIGHT = 1.5
+COHESION_WEIGHT = 1
+LEADER_WEIGHT = 1
 
 BOID_SIZE = 8
 BG_COLOR = (30, 30, 30)
@@ -272,10 +272,10 @@ def update_velocity_mx(boids):
         velocity_mx.append(boids[i].vel)
 
 def create_boids(n,lead_boid):
-    return [Boid(random.uniform((lead_boid[0].pos.x - 25), (lead_boid[0].pos.x + 25)), random.uniform((lead_boid[0].pos.y - 25), (lead_boid[0].pos.y + 25))) for _ in range(n)]
+    return [Boid(random.uniform((lead_boid[0].pos.x - 50), (lead_boid[0].pos.x + 50)), random.uniform((lead_boid[0].pos.y - 50), (lead_boid[0].pos.y + 50))) for _ in range(n)]
 
 def create_leaders(n):
-    return [Leader(100,350) for _ in range(n)]
+    return [Leader(140,140) for _ in range(n)]
 
 def main():
     pygame.init()
@@ -300,13 +300,19 @@ def main():
     x = math.floor(x)
     y = math.floor(y)
     start_pos = (x,y)
-    goal_pos = (1200),(100)
-
+    corner1_pos = (1260),(140)
+    corner2_pos = (1260),(560)
+    corner3_pos = (140),(560)
+    goal_pos = (140),(140)
     
     planner = AStarPathPlanner(grid, allow_diagonal=True)
-    path1, _ = planner.find_path(start_pos,goal_pos)
-    path2, _ = planner.find_path(goal_pos,((600),(600)))
-    path = path1 + path2
+    path1, _ = planner.find_path(start_pos,corner1_pos)
+    path2, _ = planner.find_path(corner1_pos,corner2_pos)
+    path3, _ = planner.find_path(corner2_pos,corner3_pos)
+    path4, _ = planner.find_path(corner3_pos,goal_pos)
+
+
+    path = path1 + path2 + path3 + path4
 
     #--------------------------------------------------
     num_loops = 0
