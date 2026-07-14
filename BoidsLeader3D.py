@@ -47,39 +47,38 @@ CENTER = Vector3(WIDTH / 2, HEIGHT / 2, DEPTH / 2)
 # -------------------------------- #PATH PLANNING
 
 
-grid = np.zeros((WIDTH, DEPTH))
-# --------------- #OBSTACLES
-cx, cz = WIDTH // 2, DEPTH // 2
-xx, zz = np.ogrid[:WIDTH, :DEPTH]
-grid[(xx - cx) ** 2 + (zz - cz) ** 2 <= 100 ** 2] = 1
-
-planner = AStarPathPlanner(grid, allow_diagonal=True)
 
 
-START_POS = Vector3(200,1,200)
-PATH_HEIGHT = 300
-MID_POS = Vector3(300,1,900)
-MID2_POS = Vector3(700,1,900)
-END_POS = Vector3(200,1,200)
+class Obstacle:
+    """Stationary vertical pillar. Never moves; only the Boid class reacts to it.
 
-path1, _ = planner.find_path((int(START_POS.x),int(START_POS.z)),(int(MID_POS.x),int(MID_POS.z)))
-op_path, _ = planner.find_path((int(MID_POS.x),int(MID_POS.z)),(int(MID2_POS.x),int(MID2_POS.z)))
-path3d1 = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in path1]
-op_path3d = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in op_path]
+    Defined purely by its x/z footprint (radius); it spans the full height, so
+    boids avoid it in the horizontal plane regardless of their altitude.
+    """
+
+    def __init__(self, x, z, radius=OBSTACLE_RADIUS):
+        self.x = x
+        self.z = z
+        self.radius = radius
+        # Solid core: the physical pillar, from the floor to the ceiling.
+        self.shape = cylinder(pos=vector(x, 0, z),
+                              axis=vector(0, HEIGHT, 0),
+                              radius=radius,
+                              color=vp_color(OBSTACLE_COLOR),
+                              opacity=1.0)
+        # Faint outer shell: the influence zone where boids start steering away.
+        self.zone = cylinder(pos=vector(x, 0, z),
+                             axis=vector(0, HEIGHT, 0),
+                             radius=radius + OBSTACLE_BUFFER,
+                             color=vp_color(OBSTACLE_COLOR),
+                             opacity=0.12)
+
+    def remove_visual(self):
+        self.shape.visible = False
+        self.zone.visible = False
+#------------------------------------------
 
 
-mission_index = 0
-mission_state = [
-    {"step": 0, "name": "Takeoff", "path": None},
-    {"step": 1, "name": "Cruise", "path": path3d1, "Dest": MID_POS},
-    {"step": 2, "name": "Operation", "path": None, "Type": "Sweep"},
-    {"step": 3, "name": "Operation", "path": op_path3d, "Type": "Match"},
-    {"step": 4, "name": "Cruise", "path": None, "Dest": END_POS},
-    {"step": 5, "name": "Level", "path": None},
-    {"step": 6, "name": "Landing", "path": None}
-]
-current_step = mission_state[mission_index]
-# --------------------------------
 
 
 def vp(v):
@@ -176,33 +175,6 @@ class Leader:
         self.shape.visible = False
 
 
-class Obstacle:
-    """Stationary vertical pillar. Never moves; only the Boid class reacts to it.
-
-    Defined purely by its x/z footprint (radius); it spans the full height, so
-    boids avoid it in the horizontal plane regardless of their altitude.
-    """
-
-    def __init__(self, x, z, radius=OBSTACLE_RADIUS):
-        self.x = x
-        self.z = z
-        self.radius = radius
-        # Solid core: the physical pillar, from the floor to the ceiling.
-        self.shape = cylinder(pos=vector(x, 0, z),
-                              axis=vector(0, HEIGHT, 0),
-                              radius=radius,
-                              color=vp_color(OBSTACLE_COLOR),
-                              opacity=1.0)
-        # Faint outer shell: the influence zone where boids start steering away.
-        self.zone = cylinder(pos=vector(x, 0, z),
-                             axis=vector(0, HEIGHT, 0),
-                             radius=radius + OBSTACLE_BUFFER,
-                             color=vp_color(OBSTACLE_COLOR),
-                             opacity=0.12)
-
-    def remove_visual(self):
-        self.shape.visible = False
-        self.zone.visible = False
 
 
 class Boid:
@@ -387,6 +359,61 @@ class Boid:
     def remove_visual(self):
         self.shape.visible = False
 
+#-----------------------------------------------------------------------------------------------------
+
+# Create the scene up front, before any 3D primitives (e.g. Obstacle's
+# cylinders below) get instantiated. VPython auto-creates a default canvas
+# the moment the first 3D object is drawn if one doesn't exist yet - so
+# without this, the Obstacles below would silently spawn their own scene,
+# and the explicit canvas() call that used to live in main() would create a
+# second, separate one, splitting the visuals across two windows.
+scene = canvas(title="3D Boids (VPython)  -  space: pause  |  r: reset  |  up/down: add/remove  |  q: quit\n",
+               width=1200, height=700, background=vp_color(BG_COLOR))
+scene.center = vp(CENTER)
+scene.range = max(WIDTH, HEIGHT, DEPTH) * 0.6
+scene.forward = vector(1, -0.4, 1)
+
+obstacles = [
+        Obstacle(WIDTH * 0.35, DEPTH * 0.35),
+        Obstacle(WIDTH * 0.35, DEPTH * 0.65),
+        Obstacle(WIDTH * 0.65, DEPTH * 0.35),
+        Obstacle(WIDTH * 0.65, DEPTH * 0.65),
+    ]
+
+
+grid = np.zeros((WIDTH, DEPTH))
+# --------------- #OBSTACLES
+xx, zz = np.ogrid[:WIDTH, :DEPTH]
+for obs in obstacles:
+    grid[(xx - obs.x) ** 2 + (zz - obs.z) ** 2 <= (OBSTACLE_RADIUS + 20) ** 2] = 1
+ 
+
+planner = AStarPathPlanner(grid, allow_diagonal=True)
+
+START_POS = Vector3(200,1,200)
+PATH_HEIGHT = 300
+MID_POS = Vector3(1000,1,1600)
+MID2_POS = Vector3(700,1,900)
+END_POS = Vector3(200,1,200)
+
+path1, _ = planner.find_path((int(START_POS.x),int(START_POS.z)),(int(MID_POS.x),int(MID_POS.z)))
+op_path, _ = planner.find_path((int(MID_POS.x),int(MID_POS.z)),(int(MID2_POS.x),int(MID2_POS.z)))
+path3d1 = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in path1]
+op_path3d = [Vector3(p[0], PATH_HEIGHT, p[1]) for p in op_path]
+
+
+mission_index = 0
+mission_state = [
+    {"step": 0, "name": "Takeoff", "path": None},
+    {"step": 1, "name": "Cruise", "path": path3d1, "Dest": MID_POS},
+    {"step": 2, "name": "Operation", "path": None, "Type": "Sweep"},
+    {"step": 3, "name": "Operation", "path": op_path3d, "Type": "Match"},
+    {"step": 4, "name": "Cruise", "path": None, "Dest": END_POS},
+    {"step": 5, "name": "Level", "path": None},
+    {"step": 6, "name": "Landing", "path": None}
+]
+current_step = mission_state[mission_index]
+#-----------------------------------------------------------------------------------------------------
 
 distance_mx = []
 def update_distance_mx(boids, lead_boid):
@@ -582,11 +609,9 @@ def main():
     global NUM_BOIDS
     
     
-    scene = canvas(title="3D Boids (VPython)  -  space: pause  |  r: reset  |  up/down: add/remove  |  q: quit\n",
-                   width=1200, height=700, background=vp_color(BG_COLOR))
-    scene.center = vp(CENTER)
-    scene.range = max(WIDTH, HEIGHT, DEPTH) * 0.6
-    scene.forward = vector(1, -0.4, 1)
+    # Scene was already created at module level (before the Obstacle pillars
+    # were drawn) - reuse it here rather than creating a second one.
+    global scene
 
     # Translucent bounding volume so the 3D area is visible.
     box(pos=vp(CENTER), size=vector(WIDTH, HEIGHT, DEPTH),
@@ -601,14 +626,11 @@ def main():
     boids = create_boids(NUM_BOIDS, lead_boid)
 
     # Stationary pillars (x, z footprint) the boids must steer around.
-    obstacles = [
-        Obstacle(WIDTH / 2, DEPTH / 2),
-        #Obstacle(WIDTH * 0.35, DEPTH * 0.65),
-    ]
     
-    # path = path1
-    # for p in path:
-    #     sphere(pos=vector(p[0], PATH_HEIGHT, p[1]), radius=1, color=color.yellow, make_trail=False)
+    
+    path = path1
+    for p in path:
+        sphere(pos=vector(p[0], PATH_HEIGHT, p[1]), radius=3, color=color.yellow, make_trail=False)
 
     state = {"paused": False, "running": True, "reset": False, "add": 0}
 
